@@ -31,6 +31,10 @@ import requests
 import json
 import os
 from collections import deque
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
@@ -39,9 +43,8 @@ class SignalAlertSystemV3:
 
     def __init__(self):
         # 代理设置（云端环境自动禁用）
-        import os
         self.is_cloud_env = os.getenv('ZEABUR') is not None or os.getenv('CLOUD_ENV') is not None
-        self.PROXY_URL = "http://127.0.0.1:15236" if not self.is_cloud_env else None
+        self.PROXY_URL = os.getenv('PROXY_URL') if not self.is_cloud_env else None
         self.TARGET_SYMBOL = 'SOL/USDT'
         self.TIMEFRAME = '1h'
         self.FEE_RATE = 0.0004
@@ -71,10 +74,16 @@ class SignalAlertSystemV3:
             'leverage': 5                   # 杠杆 5x
         }
 
-        # 通知配置
-        self.telegram_token = "8378210377:AAFolTlY9BsW5BfXUKt7aqavnpfGvJwgVaI"
-        self.telegram_chat_id = "838429342"
-        self.wechat_api_url = "https://sctapi.ftqq.com/SCT307134TCw1AtdGtadVA7CZhRklB0ptp.send"
+        # 通知配置（从环境变量读取）
+        self.telegram_token = os.getenv('TELEGRAM_TOKEN')
+        self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        self.wechat_api_url = os.getenv('WECHAT_API_URL')
+        
+        # 验证必需的环境变量
+        if not self.telegram_token:
+            raise ValueError('TELEGRAM_TOKEN 环境变量未设置')
+        if not self.telegram_chat_id:
+            raise ValueError('TELEGRAM_CHAT_ID 环境变量未设置')
 
         # 初始化
         self.bot = None

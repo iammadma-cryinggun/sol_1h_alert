@@ -12,6 +12,14 @@ services:
         value: Asia/Shanghai
       - name: PYTHONUNBUFFERED
         value: "1"
+      - name: TELEGRAM_TOKEN
+        value: YOUR_TELEGRAM_BOT_TOKEN_HERE
+      - name: TELEGRAM_CHAT_ID
+        value: YOUR_TELEGRAM_CHAT_ID_HERE
+      - name: WECHAT_API_URL
+        value: https://sctapi.ftqq.com/YOUR_SCKEY.send
+      - name: ZEABUR
+        value: "1"
     resources:
       cpu: 0.5
       memory: 512

@@ -35,12 +35,33 @@
 4. 选择"从Git仓库部署"
 5. 输入仓库地址
 6. 选择分支：`main`
-7. Zeabur会自动读取 `zeabur.yml` 配置
-8. 部署完成！
+7. **配置环境变量**（重要！）：
+   ```
+   TELEGRAM_TOKEN=你的Telegram_Bot_Token
+   TELEGRAM_CHAT_ID=你的Telegram_Chat_ID
+   WECHAT_API_URL=https://sctapi.ftqq.com/你的SCKEY.send（可选）
+   ```
+8. Zeabur会自动读取 `zeabur.yml` 配置
+9. 部署完成！
 
-### 环境变量
+### 环境变量说明
 
-无需额外配置，所有参数已内置在代码中。
+| 变量名 | 必需 | 说明 | 获取方式 |
+|--------|------|------|----------|
+| `TELEGRAM_TOKEN` | ✅ | Telegram Bot Token | 向 @BotFather 申请 |
+| `TELEGRAM_CHAT_ID` | ✅ | Telegram Chat ID | 发送消息给 @userinfobot 获取 |
+| `WECHAT_API_URL` | ❌ | 微信Server酱 | 在 [Server酱](https://sct.ftqq.com) 配置 |
+
+### 本地运行
+
+1. 复制 `.env.example` 为 `.env`
+2. 填写你的Telegram配置：
+   ```bash
+   TELEGRAM_TOKEN=你的token
+   TELEGRAM_CHAT_ID=你的chat_id
+   ```
+3. 安装依赖：`pip install -r requirements.txt`
+4. 运行：`python sol1小时预警V3_对齐版.py`
 
 ## 数据文件
 
