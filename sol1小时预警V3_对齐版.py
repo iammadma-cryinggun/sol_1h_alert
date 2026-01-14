@@ -8,9 +8,7 @@
   3. [OK] 线程安全（锁 + deque）
   4. [OK] 30秒短循环监控（修复睡眠阻塞）
   5. [OK] 完整的时间止损两阶段确认
-  6. [STAR] 全局最优参数：Squeeze=4.0%, 做多>30, 做空<60（二维网格搜索80组合）
-     - 收益率: 1287%（原778%，提升65%）
-     - 盈亏比: 28.93（原14.47，提升100%）
+  6. [🔥V4信号替换] 使用V4信号逻辑：布林带挤压5% + COO极值(做多>80,做空<20)
   7. [STAR][STAR] 集成动态仓位V2（保守策略）
      - 基于信号稳定性动态分配仓位：25%-35%
      - 高质量信号（70-100分）：35%仓位，胜率54.8%
@@ -66,7 +64,7 @@ class SignalAlertSystemV3:
             'trail_after_tp1': True,        # TP1后开启移动止损
             'flip_stop_to_breakeven': True, # 移动止损前先保本
             'trail_offset': 0.6,            # [STAR] 移动止损偏移 0.6% (优化)
-            'squeeze': 4.0,                 # [STAR] 布林带收缩 4.0%（全局最优，从3.0%提高）
+            'squeeze': 5.0,                 # [🔥V4修改] 布林带收缩 5.0%（原4.0%）
             'oi_change_filter': -0.01,      # OI过滤阈值 -1%
             'time_stop_hours': 80,          # [STAR] 时间止损 80h (优化)
             'cost_zone_pct': 0.5,          # 成本区 ±0.5%
@@ -74,7 +72,7 @@ class SignalAlertSystemV3:
             'leverage': 5                   # 杠杆 5x
         }
 
-        # 通知配置（从环境变量读取）
+        # 通知配置（从环境变量读取） - 保持完全不变
         self.telegram_token = os.getenv('TELEGRAM_TOKEN')
         self.telegram_chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.wechat_api_url = os.getenv('WECHAT_API_URL')
@@ -85,21 +83,21 @@ class SignalAlertSystemV3:
         if not self.telegram_chat_id:
             raise ValueError('TELEGRAM_CHAT_ID 环境变量未设置')
 
-        # 初始化
+        # 初始化 - 保持完全不变
         self.bot = None
         self.wechat_enabled = True
         self.exchange = None
 
-        # [STAR] 线程安全：使用锁和deque
+        # [STAR] 线程安全：使用锁和deque - 保持完全不变
         self.oi_lock = threading.Lock()
         self.oi_history = deque(maxlen=576)  # 自动限制长度，线程安全
         self.oi_changes_history = deque(maxlen=576)  # [STAR] 新增：存储OI变化率
 
-        # OI采集线程控制
+        # OI采集线程控制 - 保持完全不变
         self.oi_collector_running = False
         self.oi_collector_thread = None
 
-        # 当前仓位状态
+        # 当前仓位状态 - 保持完全不变
         self.current_position = {
             'status': 'none',
             'entry_price': 0,
@@ -115,37 +113,36 @@ class SignalAlertSystemV3:
             'current_pnl': 0,
             'current_pnl_pct': 0,
             'hold_hours': 0,
-            'time_stop_activated': False,  # [STAR] 改名：与回测V3一致
-            # [TARGET] 原始趋势信息（混合策略：保留第一次信号的止盈目标）
+            'time_stop_activated': False,
             'original_tp1': 0,
             'original_tp2': 0,
-            'original_signal': 0,  # 1=long, -1=short
+            'original_signal': 0,
             'original_signal_time': None,
-            'trend_continuation_count': 0  # 同一趋势延续次数
+            'trend_continuation_count': 0
         }
 
-        # 数据存储
+        # 数据存储 - 保持完全不变
         self.price_data = pd.DataFrame()
         self.historical_signals = []
 
-        # 运行标志
+        # 运行标志 - 保持完全不变
         self.is_running = False
         self.monitor_thread = None
 
-        # [STAR] 持仓状态文件
+        # [STAR] 持仓状态文件 - 保持完全不变
         self.position_file = "sol_position_state.json"
 
-        # [STAR] 信号历史文件（独立于持仓，用于手动平仓后记录信号）
+        # [STAR] 信号历史文件 - 保持完全不变
         self.signal_history_file = "sol_signal_history.json"
 
-        # 初始化
+        # 初始化 - 保持完全不变
         self.init_exchange()
         self.setup_notifications()
-        self.setup_telegram_commands()  # [NEW] 设置Telegram命令
-        self.load_position_state()  # [STAR] 加载持久化的持仓状态
-        self.load_signal_history()  # [NEW] 加载信号历史
+        self.setup_telegram_commands()
+        self.load_position_state()
+        self.load_signal_history()
 
-    # ============ 动态仓位V2功能 ============
+    # ============ 动态仓位V2功能 - 保持完全不变 ============
     def calculate_dynamic_position_score(self, c, l, h, ma20, bw, coo, oi_change, oi_divergence):
         """
         计算信号稳定性评分 (0-100) - 用于动态仓位V2
@@ -170,41 +167,37 @@ class SignalAlertSystemV3:
 
         # 1. COO稳定性 (0-25分) - 避开极值
         if is_sqz:
-            if coo > 30 and coo <= 50:  # 做多区间
-                if 35 <= coo <= 45:
+            # [🔥V4修改] 重点关注COO > 80（做多）和 COO < 20（做空）
+            if coo > 80:  # V4做多极值区
+                if coo > 85:
                     score += 25
                     details['coo_score'] = 25
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期35-45最优区间)'
-                elif coo < 35:
+                    details['coo_reason'] = f'COO {coo:.1f}(V4极值做多>85)'
+                else:
                     score += 20
                     details['coo_score'] = 20
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期30-35良好)'
-                else:
-                    score += 15
-                    details['coo_score'] = 15
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期45-50一般)'
-            elif coo < 60 and coo >= 50:  # 做空区间
-                if 52 <= coo <= 58:
+                    details['coo_reason'] = f'COO {coo:.1f}(V4做多>80)'
+            elif coo < 20:  # V4做空极值区
+                if coo < 15:
                     score += 25
                     details['coo_score'] = 25
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期52-58最优)'
-                elif coo > 58:
-                    score += 20
-                    details['coo_score'] = 20
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期58-60良好)'
+                    details['coo_reason'] = f'COO {coo:.1f}(V4极值做空<15)'
                 else:
-                    score += 15
-                    details['coo_score'] = 15
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期50-52一般)'
-            else:  # 🔧 修复：coo <= 30 的情况
-                if coo <= 20:  # 极度超卖
                     score += 20
                     details['coo_score'] = 20
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期≤20极度超卖)'
-                else:  # 20 < coo <= 30
-                    score += 15
-                    details['coo_score'] = 15
-                    details['coo_reason'] = f'COO {coo:.1f}(收缩期20-30超卖区间)'
+                    details['coo_reason'] = f'COO {coo:.1f}(V4做空<20)'
+            elif coo > 60:  # 强势做多区
+                score += 15
+                details['coo_score'] = 15
+                details['coo_reason'] = f'COO {coo:.1f}(强势做多60-80)'
+            elif coo < 40:  # 强势做空区
+                score += 15
+                details['coo_score'] = 15
+                details['coo_reason'] = f'COO {coo:.1f}(强势做空20-40)'
+            else:  # 中间区域
+                score += 10
+                details['coo_score'] = 10
+                details['coo_reason'] = f'COO {coo:.1f}(中间区域40-60)'
         else:
             # 扩张时：只取COO 20-30或70-80的温和区间
             if 70 <= coo <= 80:
@@ -245,7 +238,7 @@ class SignalAlertSystemV3:
             details['bw_score'] = 5
             details['bw_reason'] = f'带宽{bw:.2f}%(高度扩张>5%)'
 
-        # 3. OI支撑 (0-25分)
+        # 3. OI支撑 (0-25分) - 保持与V3相同
         if oi_change > 0.01:
             score += 25
             details['oi_score'] = 25
@@ -267,14 +260,14 @@ class SignalAlertSystemV3:
             details['oi_score'] -= 15
             details['oi_reason'] += f',背离-15分'
 
-        # 4. 价格突破质量 (0-20分)
+        # 4. 价格突破质量 (0-20分) - V4要求突破MA20
         p_bull = (l <= ma20) and (c > ma20)
         p_bear = (h >= ma20) and (c < ma20)
 
         if p_bull or p_bear:
             score += 15
             details['break_score'] = 15
-            details['break_reason'] = '有效突破MA20'
+            details['break_reason'] = '有效突破MA20(V4必需)'
 
             if p_bull:
                 break_pct = (c - ma20) / ma20 * 100
@@ -294,14 +287,14 @@ class SignalAlertSystemV3:
                     details['break_reason'] += f'(幅度{break_pct:.2f}%)'
         else:
             details['break_score'] = 0
-            details['break_reason'] = '无有效突破'
+            details['break_reason'] = '无有效突破(不满足V4条件)'
 
         total_score = max(0, min(100, score))
         return total_score, details
 
     def get_dynamic_position_size_v2(self, score):
         """
-        动态仓位映射V2（保守策略）
+        动态仓位映射V2（保守策略）- 保持完全不变
         """
         base_pos_size = self.PARAMS['position_size']
 
@@ -315,8 +308,9 @@ class SignalAlertSystemV3:
             return 0.28
         else:
             return 0.25
-    # ============ 动态仓位功能结束 ============
 
+    # ============ 以下所有函数保持完全不变 ============
+    
     def init_exchange(self):
         """初始化交易所连接（永续合约）"""
         try:
@@ -414,7 +408,7 @@ class SignalAlertSystemV3:
             if message.chat.id != int(self.telegram_chat_id):
                 return
             help_text = """
-🤖 SOL预警系统 V3 - 交互式控制
+🤖 SOL预警系统 V3 - 与回测V3完全对齐版
 
 可用命令：
 /status - 查看当前持仓状态
@@ -452,20 +446,16 @@ TP2: ${pos['take_profit2']:.4f}
 
                 # 显示信号历史
                 if pos.get('original_signal') and pos.get('original_signal_time'):
-                    # 处理时间类型（可能是字符串或datetime对象）
                     signal_time = pos['original_signal_time']
                     if isinstance(signal_time, str):
                         signal_time = datetime.fromisoformat(signal_time)
 
-                    # 正确处理时区：统一转换为UTC时间再比较
                     from datetime import timezone
                     now_utc = datetime.now(timezone.utc)
 
-                    # 如果signal_time有时区信息，转换为UTC
                     if signal_time.tzinfo is not None:
                         signal_time_utc = signal_time.astimezone(timezone.utc)
                     else:
-                        # 如果没有时区信息，假设是UTC
                         signal_time_utc = signal_time.replace(tzinfo=timezone.utc)
 
                     hours_ago = (now_utc - signal_time_utc).total_seconds() / 3600
@@ -521,7 +511,6 @@ TP2: ${pos['take_profit2']:.4f}
                     self.bot.send_message(self.telegram_chat_id, "⚠️ 当前无持仓，无需平仓")
                 return
 
-            # 发送平仓通知
             pos = self.current_position
             alert_title = f"📉 手动平仓 - {self.TARGET_SYMBOL}"
             alert_message = (
@@ -533,7 +522,6 @@ TP2: ${pos['take_profit2']:.4f}
             )
 
             if clear_history:
-                # 清除所有数据（包括信号历史）
                 alert_message += "已清除：\n- 持仓数据\n- 信号历史\n- 趋势信息\n\n下次信号将作为新趋势处理。"
                 try:
                     if os.path.exists(self.signal_history_file):
@@ -541,19 +529,16 @@ TP2: ${pos['take_profit2']:.4f}
                 except:
                     pass
 
-                # 重置所有信号信息
                 self.current_position['original_signal'] = 0
                 self.current_position['original_signal_time'] = None
                 self.current_position['original_tp1'] = 0
                 self.current_position['original_tp2'] = 0
                 self.current_position['trend_continuation_count'] = 0
             else:
-                # 保留信号历史
                 alert_message += "已保留信号历史\n\n下次相同信号将使用混合策略：\n- 新止损（最新价格）\n- 旧止盈（原始信号）"
 
             self.send_alert(alert_title, alert_message, "close")
 
-            # 重置持仓状态
             self.current_position = {
                 'status': 'none',
                 'entry_price': 0,
@@ -570,7 +555,6 @@ TP2: ${pos['take_profit2']:.4f}
                 'current_pnl_pct': 0,
                 'hold_hours': 0,
                 'time_stop_activated': False,
-                # 保留或不保留信号历史
                 'original_tp1': 0 if clear_history else self.current_position.get('original_tp1', 0),
                 'original_tp2': 0 if clear_history else self.current_position.get('original_tp2', 0),
                 'original_signal': 0 if clear_history else self.current_position.get('original_signal', 0),
@@ -578,7 +562,6 @@ TP2: ${pos['take_profit2']:.4f}
                 'trend_continuation_count': 0 if clear_history else self.current_position.get('trend_continuation_count', 0)
             }
 
-            # 保存状态
             self.save_position_state()
 
         except Exception as e:
@@ -640,9 +623,8 @@ TP2: ${pos['take_profit2']:.4f}
 
         while self.oi_collector_running:
             try:
-                current_time = datetime.now(timezone.utc)  # [OK] 修复：统一使用UTC时间
+                current_time = datetime.now(timezone.utc)
 
-                # 只在整5分钟的倍数时刻采集
                 if current_time.minute % 5 == 0 and current_time.second < 30:
                     oi_value = self.fetch_realtime_oi()
                     if oi_value:
@@ -651,11 +633,9 @@ TP2: ${pos['take_profit2']:.4f}
                             'open_interest': oi_value
                         }
 
-                        # [STAR] 线程安全：使用锁保护
                         with self.oi_lock:
                             self.oi_history.append(oi_point)
 
-                            # [STAR] 新增：计算并存储OI变化率
                             if len(self.oi_history) >= 2:
                                 prev_oi = list(self.oi_history)[-2]['open_interest']
                                 oi_change = (oi_value - prev_oi) / prev_oi if prev_oi > 0 else 0
@@ -716,13 +696,11 @@ TP2: ${pos['take_profit2']:.4f}
             saved_time = data.get('saved_at', 'unknown')
             last_trade = data.get('last_trade', {})
 
-            # [STAR] 总是显示持仓状态摘要
             print("\n" + "="*80)
             print("[STATUS] 持仓状态摘要")
             print("="*80)
 
             if saved_position.get('status') != 'none':
-                # 有持仓
                 print(f"[POSITION] 当前有持仓")
                 print(f"   方向: {'[LONG] 多头' if saved_position.get('status') == 'long' else '[SHORT] 空头'}")
                 print(f"   入场价: ${saved_position.get('entry_price', 0):.2f}")
@@ -738,20 +716,16 @@ TP2: ${pos['take_profit2']:.4f}
                 print("   3. 如果仍持有，输入 'y' 恢复持仓监控")
                 print("="*80)
 
-                # 询问用户确认
                 confirm = input("\n是否恢复持仓监控? (y/n): ").strip().lower()
 
                 if confirm == 'y':
-                    # 恢复持仓状态
                     self.current_position = saved_position
-                    # 重新计算entry_time为datetime对象
                     if saved_position.get('entry_time'):
                         if isinstance(saved_position['entry_time'], str):
                             self.current_position['entry_time'] = datetime.fromisoformat(saved_position['entry_time'])
                         else:
                             self.current_position['entry_time'] = saved_position['entry_time']
 
-                    # [NEW] 转换original_signal_time为datetime对象
                     if saved_position.get('original_signal_time'):
                         if isinstance(saved_position['original_signal_time'], str):
                             self.current_position['original_signal_time'] = datetime.fromisoformat(saved_position['original_signal_time'])
@@ -768,11 +742,9 @@ TP2: ${pos['take_profit2']:.4f}
                     self.send_alert(alert_title, alert_message, "warning")
                 else:
                     print("\n[X] 已忽略历史持仓状态，从空仓开始")
-                    # 清空持仓状态文件
                     os.remove(self.position_file)
                     print("   已删除持仓状态文件")
             else:
-                # 空仓
                 print(f"[POSITION] 当前无持仓")
                 if last_trade:
                     print()
@@ -797,7 +769,6 @@ TP2: ${pos['take_profit2']:.4f}
             return None
 
         try:
-            # 获取最新200根永续合约K线
             candles = self.exchange.fetch_ohlcv(
                 self.TARGET_SYMBOL,
                 self.TIMEFRAME,
@@ -807,10 +778,9 @@ TP2: ${pos['take_profit2']:.4f}
             if not candles:
                 return None
 
-            # 构造DF并转换时间
             df_price = pd.DataFrame(candles, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            df_price['ts'] = pd.to_datetime(df_price['ts'], unit='ms')  # 保持UTC时间
-            df_price['ts_bj'] = df_price['ts'] + timedelta(hours=8)  # 北京时间仅用于显示
+            df_price['ts'] = pd.to_datetime(df_price['ts'], unit='ms')
+            df_price['ts_bj'] = df_price['ts'] + timedelta(hours=8)
 
             df_price.set_index('ts', inplace=True)
 
@@ -822,12 +792,11 @@ TP2: ${pos['take_profit2']:.4f}
 
     def calculate_hourly_oi_change(self, df_price):
         """计算1小时OI变化率"""
-        # [STAR] 线程安全：使用锁读取OI数据
         with self.oi_lock:
             if len(self.oi_history) < 12:
                 return 0, 0
 
-            current_time = datetime.now(timezone.utc)  # [OK] 修复：统一使用UTC时间
+            current_time = datetime.now(timezone.utc)
             one_hour_ago = current_time - timedelta(hours=1)
 
             oi_before = None
@@ -846,7 +815,6 @@ TP2: ${pos['take_profit2']:.4f}
         else:
             oi_change_pct = 0
 
-        # 计算价格变化率
         if len(df_price) >= 2:
             price_now = df_price['c'].iloc[-1]
             price_before = df_price['c'].iloc[-2]
@@ -868,6 +836,7 @@ TP2: ${pos['take_profit2']:.4f}
         dev = c.rolling(20).std()
         df_price['upper'] = basis + (2.0 * dev)
         df_price['lower'] = basis - (2.0 * dev)
+        # [🔥V4修改] 计算带宽（V4关键指标）
         df_price['bandwidth'] = (df_price['upper'] - df_price['lower']) / df_price['ma20'] * 100
 
         # COO
@@ -887,6 +856,10 @@ TP2: ${pos['take_profit2']:.4f}
         n_stc = (stc - 50) * 2.0
 
         df_price['coo'] = (n_rsi + n_cci + n_stc) / 4.7 * 2 + 50
+
+        # [🔥V4修改] 计算突破信号
+        df_price['bull_break'] = (df_price['l'] <= df_price['ma20']) & (df_price['c'] > df_price['ma20'])
+        df_price['bear_break'] = (df_price['h'] >= df_price['ma20']) & (df_price['c'] < df_price['ma20'])
 
         # OI计算
         if len(self.oi_history) >= 2:
@@ -919,45 +892,52 @@ TP2: ${pos['take_profit2']:.4f}
         return False, ""
 
     def check_signal(self, df_price):
-        """检查交易信号"""
+        """检查交易信号 - [🔥V4修改] 替换为V4信号逻辑"""
         if len(df_price) < 50:
             return 0, "数据不足"
 
         # 使用上一根已收盘的K线
         if len(df_price) > 1:
-            latest = df_price.iloc[-2]
+            latest = df_price.iloc[-2]  # 上一根已收盘K线
             current_kline_open = df_price['o'].iloc[-1]
         else:
             latest = df_price.iloc[-1]
             current_kline_open = latest['c']
 
-        c = latest['c']; l = latest['l']; h = latest['h']
-        ma20 = latest['ma20']; bw = latest['bandwidth']; coo = latest['coo']
-
-        # 信号判断
-        p_bull = (l <= ma20) and (c > ma20)
-        p_bear = (h >= ma20) and (c < ma20)
-        is_sqz = bw < self.PARAMS['squeeze']
-
-        sig = 0
+        # 获取指标值
+        bandwidth = latest['bandwidth']
+        coo = latest['coo']
+        bull_break = latest.get('bull_break', False)
+        bear_break = latest.get('bear_break', False)
+        
+        # 🔥 V4完整过滤规则（三重条件）
+        signal = 0
         signal_reason = ""
+        
+        # 条件1: 布林带挤压
+        is_squeeze = bandwidth < self.PARAMS['squeeze']
+        
+        if not is_squeeze:
+            return 0, f"不满足布林带挤压: 带宽{bandwidth:.1f}% >= {self.PARAMS['squeeze']}%"
+        
+        # 条件2 + 3: 突破 + COO极值
+        # [🔥V4修改] 使用V4极值：做多>80，做空<20
+        if bull_break and coo > 80:  # V4做多极值
+            signal = 1
+            signal_reason = f"布林带收缩({bandwidth:.1f}% < {self.PARAMS['squeeze']}%) + COO>80突破"
+        
+        elif bear_break and coo < 20:  # V4做空极值
+            signal = -1
+            signal_reason = f"布林带收缩({bandwidth:.1f}% < {self.PARAMS['squeeze']}%) + COO<20跌破"
+        else:
+            if bull_break:
+                return 0, f"做多突破但COO{coo:.1f} <= 80"
+            elif bear_break:
+                return 0, f"做空跌破但COO{coo:.1f} >= 20"
+            else:
+                return 0, f"布林带收缩但无有效突破"
 
-        if is_sqz:
-            # [STAR] 二维网格搜索全局最优：Squeeze=4.0%, 做多>30, 做空<60
-            if p_bull and coo > 30:
-                sig = 1
-                signal_reason = "布林带收缩突破 + COO > 30"
-            elif p_bear and coo < 60:
-                sig = -1
-                signal_reason = "布林带收缩跌破 + COO < 60"
-        elif coo > 80 and p_bull:
-            sig = 1
-            signal_reason = "COO超买区 > 80突破"
-        elif coo < 20 and p_bear:
-            sig = -1
-            signal_reason = "COO超卖区 < 20跌破"
-
-        if sig != 0:
+        if signal != 0:
             row_data = {
                 'oi_change_pct': latest['oi_change_pct'],
                 'oi_price_divergence': latest['oi_price_divergence']
@@ -968,36 +948,23 @@ TP2: ${pos['take_profit2']:.4f}
             if is_blocked:
                 return 0, f"信号被OI过滤拦截: {block_reason}"
 
-            return sig, signal_reason
+            return signal, signal_reason
 
-        return 0, "无信号"
+        return 0, "无V4策略信号"
 
     def is_same_trend_continuation(self, signal):
-        """判断是否是同一趋势的延续
-
-        SOL简单信号系统：只有long(1)和short(-1)
-        判断标准：信号方向相同即为同一趋势延续
-        """
-        # 如果没有原始信号信息，这是新趋势
+        """判断是否是同一趋势的延续"""
         if self.current_position.get('original_signal', 0) == 0:
             return False
 
-        # [OK] 信号翻转判断：信号方向改变
         if self.current_position['original_signal'] != signal:
             print(f"   🔄 信号翻转: {self.current_position['original_signal']} → {signal}，新趋势开始")
             return False
 
-        # 信号方向相同，说明是同一趋势的延续
         return True
 
     def open_position(self, signal, entry_price, signal_reason, df_price=None):
-        """
-        开仓
-        [STAR] 集成动态仓位V2：根据信号质量动态分配仓位（25%-35%）
-        [STAR][STAR] 显示详细的信号质量评分分解
-        [TARGET][TARGET] 混合策略：新止损+旧止盈（避免贪婪）
-        """
-        # [STAR] 动态仓位V2：计算信号质量评分（带详细分解）
+        """开仓"""
         if df_price is not None and len(df_price) >= 2:
             latest = df_price.iloc[-2]
             score, details = self.calculate_dynamic_position_score(
@@ -1007,7 +974,6 @@ TP2: ${pos['take_profit2']:.4f}
             )
             dynamic_pos_size = self.get_dynamic_position_size_v2(score)
 
-            # 信号等级判断
             if score >= 70:
                 signal_grade = "[STAR][STAR][STAR] 优质信号"
             elif score >= 55:
@@ -1019,10 +985,9 @@ TP2: ${pos['take_profit2']:.4f}
         else:
             score = 50
             details = None
-            dynamic_pos_size = self.PARAMS['position_size']  # 默认30%
+            dynamic_pos_size = self.PARAMS['position_size']
             signal_grade = "[STAR] 信号（默认参数）"
 
-        # [TARGET] 判断是否同一趋势延续
         is_continuation = self.is_same_trend_continuation(signal)
 
         sl_rate = self.PARAMS['sl'] / 100
@@ -1030,54 +995,48 @@ TP2: ${pos['take_profit2']:.4f}
         tp2_rate = self.PARAMS['tp2'] / 100
 
         if signal > 0:
-            stop_loss = entry_price * (1 - sl_rate)  # 新止损
+            stop_loss = entry_price * (1 - sl_rate)
 
             if is_continuation:
-                # [OK] 混合策略：保留原始止盈
                 take_profit1 = self.current_position['original_tp1']
                 take_profit2 = self.current_position['original_tp2']
                 print(f"   [OK] 混合策略生效(延续第{self.current_position['trend_continuation_count']+1}次): 新止损+旧止盈")
             else:
-                # 新趋势：记录原始止盈
                 take_profit1 = entry_price * (1 + tp1_rate)
                 take_profit2 = entry_price * (1 + tp2_rate)
 
             direction = "多头"
             alert_type = "buy"
         else:
-            stop_loss = entry_price * (1 + sl_rate)  # 新止损
+            stop_loss = entry_price * (1 + sl_rate)
 
             if is_continuation:
-                # [OK] 混合策略：保留原始止盈
                 take_profit1 = self.current_position['original_tp1']
                 take_profit2 = self.current_position['original_tp2']
                 print(f"   [OK] 混合策略生效(延续第{self.current_position['trend_continuation_count']+1}次): 新止损+旧止盈")
             else:
-                # 新趋势：记录原始止盈
                 take_profit1 = entry_price * (1 - tp1_rate)
                 take_profit2 = entry_price * (1 - tp2_rate)
 
             direction = "空头"
             alert_type = "sell"
 
-        # [STAR] 使用time_stop_activated（与回测V3一致）
         self.current_position = {
             'status': 'long' if signal > 0 else 'short',
             'entry_price': entry_price,
-            'entry_time': datetime.now(timezone.utc),  # [OK] 修复：统一使用UTC时间
+            'entry_time': datetime.now(timezone.utc),
             'stop_loss': stop_loss,
             'take_profit1': take_profit1,
             'take_profit2': take_profit2,
             'trail_stop': 0,
             'tp1_achieved': False,
             'breakeven_activated': False,
-            'position_size': dynamic_pos_size,  # [STAR] 使用动态仓位
+            'position_size': dynamic_pos_size,
             'leverage': self.PARAMS['leverage'],
             'current_pnl': 0,
             'current_pnl_pct': 0,
             'hold_hours': 0,
-            'time_stop_activated': False,  # [STAR] 与回测V3命名一致
-            # [TARGET] 原始趋势信息（混合策略）
+            'time_stop_activated': False,
             'original_tp1': take_profit1 if not is_continuation else self.current_position['original_tp1'],
             'original_tp2': take_profit2 if not is_continuation else self.current_position['original_tp2'],
             'original_signal': signal if not is_continuation else self.current_position['original_signal'],
@@ -1085,10 +1044,8 @@ TP2: ${pos['take_profit2']:.4f}
             'trend_continuation_count': (self.current_position['trend_continuation_count'] + 1) if is_continuation else 0
         }
 
-        # [STAR][STAR] 构建详细评分信息
         score_details_text = ""
         if details:
-            # 仓位等级说明
             if score >= 70:
                 pos_grade = "🥇 最高档 (70-100分)"
                 pos_note = "信号质量最优，历史胜率54.8%"
@@ -1128,15 +1085,12 @@ TP2: ${pos['take_profit2']:.4f}
                 f"      0-24分   → 25% (最低档)\n\n"
             )
 
-        # [TARGET] 混合策略说明
         if is_continuation:
             strategy_note = f"[OK]混合策略(延续#{self.current_position['trend_continuation_count']+1}): 新止损+旧止盈"
-            # 安全处理时间格式化
             signal_time = self.current_position['original_signal_time']
             if isinstance(signal_time, str):
                 signal_time = datetime.fromisoformat(signal_time)
 
-            # 统一转换为naive datetime（去除时区信息）
             if signal_time.tzinfo is not None:
                 signal_time = signal_time.replace(tzinfo=None)
 
@@ -1149,9 +1103,14 @@ TP2: ${pos['take_profit2']:.4f}
             tp1_desc = f"{self.PARAMS['tp1']}%"
             tp2_desc = f"{self.PARAMS['tp2']}%"
 
-        alert_title = f"{'[LONG]' if signal > 0 else '[SHORT]'} {direction}开仓信号 - {self.TARGET_SYMBOL} - {'混合策略' if is_continuation else '新趋势'}"
+        # [🔥V4修改] 更新开仓通知信息
+        alert_title = f"{'[LONG]' if signal > 0 else '[SHORT]'} {direction}开仓信号 - {self.TARGET_SYMBOL} - V4策略"
         alert_message = (
-            f"[STAR][STAR] 全局最优 + 动态仓位V2 + 混合策略 (与回测V3完全对齐)\n\n"
+            f"[🔥V4] 三重过滤策略 + 动态仓位V2 + 混合策略\n\n"
+            f"🎯 V4策略特点:\n"
+            f"   1. 布林带收缩: 带宽 < {self.PARAMS['squeeze']}%\n"
+            f"   2. COO极值: 做多 > 80, 做空 < 20\n"
+            f"   3. 价格突破: 突破MA20\n\n"
             f"[TARGET] 策略模式: {strategy_note}\n"
             f"[LOCATION] 止盈说明: {tp_note}\n\n"
             f"信号类型: {signal_reason}\n"
@@ -1173,14 +1132,13 @@ TP2: ${pos['take_profit2']:.4f}
 
         self.send_alert(alert_title, alert_message, alert_type)
 
-        # [NEW] 保存信号历史（用于手动平仓后恢复）
         if not is_continuation:
-            # 只在首次信号时保存
             self.save_signal_history(signal, entry_price, take_profit1, take_profit2)
 
-        # [STAR] 保存持仓状态到文件
         self.save_position_state()
 
+    # ============ 以下所有函数保持完全不变 ============
+    
     def monitor_position(self, current_price, df_price):
         """监控仓位"""
         pos = self.current_position
@@ -1188,11 +1146,10 @@ TP2: ${pos['take_profit2']:.4f}
             return False
 
         entry_time = pos['entry_time']
-        current_time = datetime.now(timezone.utc)  # [OK] 修复：统一使用UTC时间
+        current_time = datetime.now(timezone.utc)
         hold_hours = (current_time - entry_time).total_seconds() / 3600
         self.current_position['hold_hours'] = hold_hours
 
-        # 计算当前盈亏
         if pos['status'] == 'long':
             profit_pct = (current_price - pos['entry_price']) / pos['entry_price']
             current_pnl_pct = profit_pct * 100
@@ -1202,16 +1159,12 @@ TP2: ${pos['take_profit2']:.4f}
 
         self.current_position['current_pnl_pct'] = current_pnl_pct
 
-        # [STAR] 简化日志：仅在重要状态变化时输出
-
         exit_reason = ""
         exit_price = 0
 
-        # ============ [STAR] 时间止损 + OI动态离场（与回测V3完全一致） ============
         time_stop_hours = self.PARAMS['time_stop_hours']
         cost_zone_pct = self.PARAMS['cost_zone_pct'] / 100
 
-        # 条件1：持仓超过指定小时且仍在成本区
         in_cost_zone = abs(profit_pct) <= cost_zone_pct
         time_stop_eligible = hold_hours >= time_stop_hours and in_cost_zone
 
@@ -1219,7 +1172,6 @@ TP2: ${pos['take_profit2']:.4f}
             print(f"时间止损检查: 持仓{hold_hours}小时，盈亏{current_pnl_pct:.2f}%，进入监控状态")
             self.current_position['time_stop_activated'] = True
 
-            # [STAR] 新增：时间止损监控启动预警
             alert_title = f"[TIME] 时间止损监控启动 - {self.TARGET_SYMBOL}"
             alert_message = (
                 f"[WARN] 回测V3复合条件已满足:\n\n"
@@ -1230,16 +1182,13 @@ TP2: ${pos['take_profit2']:.4f}
             )
             self.send_alert(alert_title, alert_message, "warning")
 
-        # 条件2：OI开始掉头向下（[STAR] 与回测V3完全一致）
         oi_turn_down = False
         with self.oi_lock:
             if len(self.oi_changes_history) >= 2:
-                # [STAR] 关键：检查最近2小时OI变化都为负
                 recent_oi_changes = list(self.oi_changes_history)[-2:]
                 recent_oi_negative = all(c['oi_change'] < 0 for c in recent_oi_changes)
                 oi_turn_down = recent_oi_negative
 
-        # 触发时间止损 + OI掉头离场
         if pos['time_stop_activated'] and oi_turn_down:
             if pos['status'] == 'long':
                 exit_price = current_price * 0.999
@@ -1258,7 +1207,6 @@ TP2: ${pos['take_profit2']:.4f}
             )
             self.send_alert(alert_title, alert_message, "danger")
 
-        # ============ 止损止盈逻辑 ============
         if not exit_reason:
             sl_rate = self.PARAMS['sl'] / 100
             tp1_rate = self.PARAMS['tp1'] / 100
@@ -1271,7 +1219,6 @@ TP2: ${pos['take_profit2']:.4f}
                     exit_price = pos['stop_loss'] * 0.999
 
                 elif not pos['tp1_achieved'] and profit_pct >= tp1_rate:
-                    # [STAR] 检测到TP1达到
                     print(f"\n[TRIGGER] TP1 ACHIEVED! Profit: {current_pnl_pct:.2f}% >= {tp1_rate*100:.2f}%")
                     self.current_position['tp1_achieved'] = True
 
@@ -1282,14 +1229,11 @@ TP2: ${pos['take_profit2']:.4f}
                         print(f"[TRIGGER] Breakeven activated: ${new_sl:.2f}")
 
                     if self.PARAMS['trail_after_tp1']:
-                        # [OK] 修复：只使用入场后的最高价计算移动止损
                         if len(df_price) > 0:
-                            # 只筛选入场后的数据
                             mask = df_price.index >= pos['entry_time']
                             if mask.any():
                                 high_since_entry = df_price.loc[mask, 'h'].max()
                             else:
-                                # 如果没有入场后的数据，使用当前价格
                                 high_since_entry = current_price
                             trail_stop = high_since_entry * (1 - trail_offset)
                             self.current_position['trail_stop'] = trail_stop
@@ -1306,7 +1250,6 @@ TP2: ${pos['take_profit2']:.4f}
                         f"2️⃣ 移动止损: {'[OK] 已激活' if self.PARAMS['trail_after_tp1'] else '[X] 未激活'}\n"
                     )
 
-                    # 根据移动止损状态添加信息
                     if self.PARAMS['trail_after_tp1'] and self.current_position['trail_stop'] > 0:
                         alert_message += (
                             f"   当前移动止损价: {self.current_position['trail_stop']:.4f}\n"
@@ -1333,7 +1276,6 @@ TP2: ${pos['take_profit2']:.4f}
 
                 elif self.PARAMS['trail_after_tp1'] and pos['tp1_achieved'] and self.current_position['trail_stop'] > 0:
                     if current_price <= self.current_position['trail_stop']:
-                        # [STAR] 检测到移动止损触发
                         print(f"\n[TRIGGER] TRAILING STOP HIT!")
                         print(f"   Current: ${current_price:.2f}")
                         print(f"   Trail Stop: ${self.current_position['trail_stop']:.2f}")
@@ -1345,7 +1287,7 @@ TP2: ${pos['take_profit2']:.4f}
                     exit_reason = "BREAK_EVEN"
                     exit_price = pos['stop_loss'] * 0.999
 
-            else:  # 空头
+            else:
                 if current_price >= pos['stop_loss']:
                     exit_reason = "SL"
                     exit_price = pos['stop_loss'] * 1.001
@@ -1358,14 +1300,11 @@ TP2: ${pos['take_profit2']:.4f}
                         self.current_position['breakeven_activated'] = True
 
                     if self.PARAMS['trail_after_tp1']:
-                        # [OK] 修复：只使用入场后的最低价计算移动止损
                         if len(df_price) > 0:
-                            # 只筛选入场后的数据
                             mask = df_price.index >= pos['entry_time']
                             if mask.any():
                                 low_since_entry = df_price.loc[mask, 'l'].min()
                             else:
-                                # 如果没有入场后的数据，使用当前价格
                                 low_since_entry = current_price
                             self.current_position['trail_stop'] = low_since_entry * (1 + trail_offset)
 
@@ -1380,7 +1319,6 @@ TP2: ${pos['take_profit2']:.4f}
                         f"2️⃣ 移动止损: {'[OK] 已激活' if self.PARAMS['trail_after_tp1'] else '[X] 未激活'}\n"
                     )
 
-                    # 根据移动止损状态添加信息
                     if self.PARAMS['trail_after_tp1'] and self.current_position['trail_stop'] > 0:
                         alert_message += (
                             f"   当前移动止损价: {self.current_position['trail_stop']:.4f}\n"
@@ -1414,7 +1352,6 @@ TP2: ${pos['take_profit2']:.4f}
                     exit_reason = "BREAK_EVEN"
                     exit_price = pos['stop_loss'] * 1.001
 
-        # ============ 执行平仓 ============
         if exit_reason:
             alert_title = f"平仓通知 - {self.TARGET_SYMBOL}"
             alert_message = (
@@ -1427,7 +1364,6 @@ TP2: ${pos['take_profit2']:.4f}
             )
             self.send_alert(alert_title, alert_message, "close")
 
-            # [TARGET] 保留原始趋势信息（与BTC程序一致）
             original_tp1 = pos.get('original_tp1', 0)
             original_tp2 = pos.get('original_tp2', 0)
             original_signal = pos.get('original_signal', 0)
@@ -1450,17 +1386,13 @@ TP2: ${pos['take_profit2']:.4f}
                 'current_pnl_pct': 0,
                 'hold_hours': 0,
                 'time_stop_activated': False,
-                # [TARGET] 原始趋势信息（混合策略）
-                # 注意：不完全重置，以便后续判断同一趋势
-                # 只有当信号翻转时，才会在is_same_trend_continuation中自动判断为新趋势
                 'original_tp1': 0,
                 'original_tp2': 0,
-                'original_signal': original_signal,  # [OK] 保留原始信号
-                'original_signal_time': original_signal_time,  # [OK] 保留原始时间
-                'trend_continuation_count': trend_continuation_count  # [OK] 保留延续计数
+                'original_signal': original_signal,
+                'original_signal_time': original_signal_time,
+                'trend_continuation_count': trend_continuation_count
             }
 
-            # [STAR] 保存平仓后的状态（空仓）
             self.save_position_state()
 
             return True
@@ -1475,7 +1407,6 @@ TP2: ${pos['take_profit2']:.4f}
 
         current_price = self.price_data['c'].iloc[-1] if not self.price_data.empty else 0
 
-        # 提取变量避免f-string嵌套问题
         direction = '[LONG] 多头' if pos['status'] == 'long' else '[SHORT] 空头'
         tp1_status = '[OK]' if pos['tp1_achieved'] else '未触发'
         trail_stop_text = f"{pos['trail_stop']:.4f}" if pos['trail_stop'] else '未启用'
@@ -1507,7 +1438,10 @@ TP2: ${pos['take_profit2']:.4f}
         print(f"     信号检查: 每小时第1分钟")
         print(f"     OI采集: 每5分钟")
         print(f"     持仓监控: 每{self.POSITION_MONITOR_INTERVAL}秒（实时监控止损止盈）[STAR] 优化")
-        print(f"   [STAR] 与回测V3完全对齐")
+        print(f"   [🔥V4信号] 三重过滤策略:")
+        print(f"     布林带收缩: < {self.PARAMS['squeeze']}%")
+        print(f"     COO极值: 做多 > 80, 做空 < 20")
+        print(f"     价格突破: 突破MA20")
 
         self.start_oi_collection()
 
@@ -1521,8 +1455,7 @@ TP2: ${pos['take_profit2']:.4f}
                 current_hour = current_time.hour
                 loop_count += 1
 
-                # [STAR] 心跳日志：每10分钟打印一次系统状态（独立于信号检查）
-                if loop_count % 60 == 0:  # 10秒*60 = 10分钟
+                if loop_count % 60 == 0:
                     print(f"\n{'='*60}")
                     print(f"[TIME] 系统心跳 | {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
                     print(f"   [CHART] 监控状态: 运行中 | 循环次数: {loop_count}")
@@ -1531,7 +1464,6 @@ TP2: ${pos['take_profit2']:.4f}
                         print(f"   [UP] OI数据点: {len(self.oi_history)}个")
                     print(f"   {'='*60}\n")
 
-                # [STAR] 优化: 10秒间隔循环，确保实时检测TP1和移动止损
                 should_check_signal = (
                     current_time.minute == 1 and
                     current_hour != last_check_hour and
@@ -1554,45 +1486,40 @@ TP2: ${pos['take_profit2']:.4f}
 
                 if should_check_signal:
                     last_check_hour = current_hour
-                    print(f"\n   执行信号检查...")
+                    print(f"\n   执行V4信号检查...")
 
                     signal, reason = self.check_signal(df_price)
                     if signal != 0:
-                        print(f"   发现信号: {reason}")
+                        print(f"   V4信号发现: {reason}")
 
                         entry_price = df_price['c'].iloc[-1]
-                        self.open_position(signal, entry_price, reason, df_price)  # [STAR] 传入df_price用于动态仓位计算
+                        self.open_position(signal, entry_price, reason, df_price)
                     else:
                         print(f"   {reason}")
 
                 if should_check_position:
-                    # [STAR] 持仓监控：每10秒运行一次（带重试机制）
-                    # 确保实时检测TP1和移动止损触发
                     current_price = 0
                     max_retries = 3
                     for attempt in range(max_retries):
                         try:
                             ticker = self.exchange.fetch_ticker(self.TARGET_SYMBOL)
                             current_price = ticker['last']
-                            break  # 成功获取，退出重试
+                            break
                         except Exception as e:
                             if attempt < max_retries - 1:
                                 print(f"[WARN] Price fetch failed (attempt {attempt+1}), retrying...")
                                 time.sleep(1)
                             else:
-                                # 最后一次失败，使用K线收盘价作为备用
                                 current_price = df_price['c'].iloc[-1] if not df_price.empty else 0
                                 print(f"[WARN] Price fetch failed after {max_retries} attempts, using close price")
 
                     if current_price > 0:
                         closed = self.monitor_position(current_price, self.price_data)
                         if not closed:
-                            # 每5分钟打印一次持仓状态
                             if current_time.minute % 5 == 0 and current_time.second < 30:
                                 print(f"   [CHART] 持仓监控 ({current_time.strftime('%H:%M:%S')})")
                                 print(self.display_position_status())
 
-                # [STAR] 固定短间隔循环（10秒）- 更高频率确保实时检测
                 time.sleep(self.POSITION_MONITOR_INTERVAL)
 
             except Exception as e:
@@ -1619,26 +1546,27 @@ TP2: ${pos['take_profit2']:.4f}
             self.monitor_thread.join(timeout=5)
 
         print("\n监控已停止")
-        self.send_alert("系统通知", "SOL预警系统V3已停止", "info")
+        self.send_alert("系统通知", "SOL预警系统V3（V4信号）已停止", "info")
 
     def run(self):
         """运行主程序"""
         print("="*80)
-        print("[SYSTEM] SOL实时信号预警系统 V3 - 与回测V3完全对齐")
+        print("[SYSTEM] SOL实时信号预警系统 V3 - V4信号逻辑替换版")
         print("="*80)
-        print("[STAR] 优化参数 (来自网格搜索):")
-        print(f"   移动止损偏移: {self.PARAMS['trail_offset']}% (降低40%)")
-        print(f"   时间止损: {self.PARAMS['time_stop_hours']}h (增加33%)")
-        print(f"   OI过滤阈值: {self.PARAMS['oi_change_filter']} (保持)")
+        print("[🔥V4信号] 三重过滤策略:")
+        print(f"   布林带收缩: 带宽 < {self.PARAMS['squeeze']}%")
+        print(f"   COO极值过滤: 做多 > 80, 做空 < 20")
+        print(f"   价格突破: 突破MA20")
         print()
-        print("[TARGET] 与回测V3对齐的关键修复:")
-        print(f"   1. OI下降判断: 改为'最近2小时OI变化都为负'")
-        print(f"   2. 状态变量: time_stop_activated (与回测命名一致)")
-        print(f"   3. 线程安全: 使用锁保护OI数据")
-        print(f"   4. 短循环监控: 30秒间隔")
+        print("[TARGET] 保留V3所有功能:")
+        print(f"   1. 动态仓位V2: 25%-35%仓位分配")
+        print(f"   2. 混合策略: 新止损+旧止盈")
+        print(f"   3. 时间止损 + OI动态离场")
+        print(f"   4. Telegram交互控制")
+        print(f"   5. 持久化状态管理")
         print("="*80)
 
-        self.send_alert("[START] 系统启动V3", "SOL预警系统V3（与回测V3完全对齐）已启动", "info")
+        self.send_alert("[START] 系统启动V3(V4信号)", "SOL预警系统V3（V4信号逻辑）已启动", "info")
 
         try:
             self.start_monitoring()
